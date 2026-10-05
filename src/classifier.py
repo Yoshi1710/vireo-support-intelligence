@@ -7,22 +7,36 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, accuracy_score
 import joblib
 
-def load_and_prep_data(filepath='data/tickets.csv'):
-    df = pd.read_csv(filepath)
+def clean_and_normalize(df):
+    text_corpus = (df['customer_message'].fillna('') + " " + df['agent_notes'].fillna('')).str.lower()
+    df['text'] = text_corpus
+
+    delivery_kw = [
+        'delivery', 'dlvry', 'courier', 'dispatch', 'shipped', 'shipment', 
+        'bluedart', 'delhivery', 'tracking', 'track order', 'where is my', 
+        'transit', 'where is my package', 'package'
+    ]
+    audio_kw = [
+        'anc', 'crackling', 'sound', 'noise', 'audio', 'mic', 'volume', 
+        'earbud low', 'bass', 'static', 'low sound', 'crackling noise', 'left earbud'
+    ]
     
-    df['text'] = df['customer_message'].fillna('') + " " + df['agent_notes'].fillna('')
+    clean_cat = df['category'].copy()
     
-    logistics_keywords = ['dlvry', 'delivery', 'courier', 'dispatch', 'crr partner', 'shipped', 'tracking', 'order status', 'shipment']
-    mask_logistics = df['text'].str.lower().str.contains('|'.join(logistics_keywords), na=False)
+    # Intent realignment
+    mask_delivery = text_corpus.str.contains('|'.join(delivery_kw), regex=True, na=False)
+    clean_cat[(df['category'].isin(['Billing & Payments', 'Other'])) & mask_delivery] = 'Delivery & Shipping'
     
-    df['clean_category'] = df['category']
-    df.loc[(df['category'] == 'Billing & Payments') & mask_logistics, 'clean_category'] = 'Delivery & Shipping'
+    mask_audio = text_corpus.str.contains('|'.join(audio_kw), regex=True, na=False)
+    clean_cat[(df['category'].isin(['Other', 'Charging & Battery'])) & mask_audio] = 'Audio Quality'
     
+    df['clean_category'] = clean_cat
     return df
 
-def train_model():
+def train_and_export():
     print("Loading tickets dataset...")
-    df = load_and_prep_data()
+    df = pd.read_csv('data/tickets.csv')
+    df = clean_and_normalize(df)
     
     valid_categories = df['clean_category'].value_counts()[lambda x: x > 50].index
     df_filtered = df[df['clean_category'].isin(valid_categories)].copy()
@@ -34,25 +48,34 @@ def train_model():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     
-    print(f"Training on {len(X_train)} samples, testing on {len(X_test)} samples...")
-    
     pipeline = Pipeline([
-        ('tfidf', TfidfVectorizer(max_features=5000, stop_words='english', ngram_range=(1, 2))),
-        ('clf', LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
+        ('tfidf', TfidfVectorizer(
+            max_features=15000, 
+            ngram_range=(1, 3), 
+            sublinear_tf=True, 
+            stop_words='english'
+        )),
+        ('clf', LogisticRegression(
+            max_iter=1200, 
+            C=3.0, 
+            class_weight='balanced', 
+            random_state=42,
+            solver='lbfgs'
+        ))
     ])
     
+    print("Training improved model...")
     pipeline.fit(X_train, y_train)
     
     preds = pipeline.predict(X_test)
     acc = accuracy_score(y_test, preds)
-    print(f"\n================ Model Evaluation ================")
+    print(f"\n================ Model Re-Evaluation ================")
     print(f"Overall Accuracy: {acc*100:.2f}%")
     print("\nDetailed Performance Report:")
     print(classification_report(y_test, preds, zero_division=0))
     
     joblib.dump(pipeline, 'src/ticket_classifier.pkl')
-    print("Model saved successfully to src/ticket_classifier.pkl")
-    return pipeline
+    print("Exported updated model to src/ticket_classifier.pkl successfully!")
 
 if __name__ == '__main__':
-    train_model()
+    train_and_export()
